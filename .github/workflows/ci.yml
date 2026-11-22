@@ -1,0 +1,23 @@
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m py_compile main.py
+      - run: python scripts/build_zip.py
+      - name: Zip has plugin.json at its root and no personal files
+        run: |
+          python - <<'PY'
+          import zipfile, glob
+          z = zipfile.ZipFile(glob.glob("dist/*.zip")[0]); n = z.namelist()
+          assert "plugin.json" in n, "plugin.json must be at the zip root"
+          assert not any(x.endswith(("config.json", "index_cache.json", "error.log")) for x in n)
+          print(len(n), "files OK")
+          PY

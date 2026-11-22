@@ -1,0 +1,13 @@
+{
+  "ID": "7c1f3a52-8b1e-4d6e-9a53-f0ba2b4c1e01",
+  "ActionKeyword": "bar",
+  "ActionKeywords": ["bar", "Bar", "BAR"],
+  "Name": "Foobar Control",
+  "Description": "Control foobar2000 and play songs, albums and artists from your music library, with Radio and Similar",
+  "Author": "Malka'",
+  "Website": "https://github.com/MalkaryonV2/FoobarControl-FlowLauncher",
+  "Version": "1.1.1",
+  "Language": "python",
+  "IcoPath": "icon.png",
+  "ExecuteFileName": "main.py"
+}

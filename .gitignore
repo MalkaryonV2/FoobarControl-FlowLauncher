@@ -1,0 +1,12 @@
+# Created at runtime on the user's machine, never commit these
+config.json
+index_cache.json
+index.lock
+error.log
+*.tmp
+
+__pycache__/
+*.pyc
+dist/
+.vscode/
+.idea/
