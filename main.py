@@ -36,6 +36,8 @@ CONFIG_PATH = HERE / "config.json"
 CACHE_PATH = HERE / "index_cache.json"
 TEMP_DIR = Path(tempfile.gettempdir()) / "FoobarControlCovers"
 LOCK_PATH = HERE / "index.lock"
+NOW_CACHE_PATH = HERE / "now_playing_cache.json"
+NOW_NAMES = ("now", "np", "playing", "current", "nowplaying")  # `bar now` also shows the current song
 INDEX_VERSION = 2  # bump when the index gains fields (it is rebuilt in the background)
 ERROR_LOG = HERE / "error.log"
 ICON = "icon.png"
@@ -440,6 +442,38 @@ def match_now_playing(titles, tracks):
     return best
 
 
+def playing_window_title():
+    """(raw window title, cleaned 'Artist - Title') of the song foobar2000 is showing, or
+    (None, None) when nothing is playing. A stopped foobar only shows 'foobar2000 v2.x', and
+    other foobar windows (Preferences...) are ignored because they carry no '[foobar2000]' tag."""
+    for title, visible in (foobar_windows() or []):
+        if not (visible and title) or "[foobar2000" not in title.lower():
+            continue
+        clean = re.sub(r"\s*\[foobar2000[^\]]*\]", "", title, flags=re.I).strip()
+        if clean and not norm(clean).startswith("foobar2000"):
+            return title, clean
+    return None, None
+
+
+def load_now_cache(key):
+    """The track found for this exact window title last time (saves loading the whole index)."""
+    try:
+        c = json.loads(NOW_CACHE_PATH.read_text(encoding="utf-8"))
+        if c.get("key") == key and c.get("track") and os.path.isfile(c["track"].get("path", "")):
+            return c["track"]
+    except Exception:
+        pass
+    return None
+
+
+def save_now_cache(key, track):
+    try:
+        clean = {k: v for k, v in track.items() if not k.startswith("_")}  # '_f' holds a set
+        NOW_CACHE_PATH.write_text(json.dumps({"key": key, "track": clean}), encoding="utf-8")
+    except Exception:
+        pass
+
+
 def touch_lock():
     try:
         os.utime(str(LOCK_PATH), None)
@@ -802,6 +836,8 @@ COMMANDS = [
      ["radio"]),
     ("Similar", "Queue songs similar to the current song", "Flow.Launcher.ChangeQuery", ["similar"], ICON_SIMILAR,
      ["similar", "sim"]),
+    ("Random track", "Play a random track from foobar's playlist", "control", ["/rand"], ICON_NEXT,
+     ["random", "rand", "shuffle"]),
 ]
 
 
@@ -861,8 +897,10 @@ class FoobarBar(FlowLauncher):
                               "open_config", [])]
         if q.startswith(">>"):
             return self.mode_step(q[2:])
-        if q == "":
-            return self.command_items("")
+        if q == "" or (" " not in q and norm(q) in NOW_NAMES):
+            clear_temp()
+            now = self.now_playing_items()
+            return now + (self.command_items("") if q == "" else [])
 
         results = self.command_items(norm(q)) if " " not in q else []
 
@@ -919,8 +957,52 @@ class FoobarBar(FlowLauncher):
             self.item("Play next (after the current track)", label, "play", [kind, eid, "next"], icon=icon),
         ] + (self.mix_buttons(eid) if kind == "song" else [])
 
+    def current_track(self, key):
+        """The library track matching foobar's window title (cached by title, so the library
+        index is only loaded when the song changes)."""
+        t = load_now_cache(key)
+        if t is not None:
+            return t
+        t = match_now_playing([key], get_index(self.cfg)["tracks"])
+        if t is not None:
+            save_now_cache(key, t)
+        return t
+
+    def now_playing_items(self):
+        """The 'Now playing' result shown first for `bar`: song, artist, album and its cover.
+        Enter = pause / resume. Shift+Enter = next, previous, Radio, Similar."""
+        running = foobar_running()
+        if running is None:  # not Windows: can't read foobar's window
+            return []
+        if running is False:
+            return [self.item("foobar2000 is not running", "Pick a song below and it will start for you.",
+                              "noop", [], icon=icon_path(ICON_SONG), score=300000)]
+        raw, clean = playing_window_title()
+        if raw is None:
+            return [self.item("Nothing playing", "Press Enter to start playback.",
+                              "control", ["/playpause"], icon=icon_path(ICON_PLAYPAUSE), score=300000)]
+        t = self.current_track(raw)
+        if t is None:  # playing something that isn't in the indexed library
+            return [self.item(clean, "Now playing  -  press Enter to pause / resume",
+                              "control", ["/playpause"], icon=icon_path(ICON_SONG), score=300000)]
+        sub = "Now playing  -  " + (" - ".join(x for x in [t.get("artist", ""), t.get("album", "")] if x)
+                                    or "press Enter to pause / resume")
+        return [self.item(t["title"], sub, "control", ["/playpause"],
+                          icon=cover_for(t) or icon_path(ICON_SONG), context=["now", t["id"]], score=300000)]
+
     def context_menu(self, data):
         kind, eid = data[0], data[1]
+        if kind == "now":  # menu of the 'Now playing' result
+            return [
+                self.item("Pause / Resume", "Toggle playback", "control", ["/playpause"], icon=icon_path(ICON_PLAYPAUSE)),
+                self.item("Next track", "Skip to the next track", "control", ["/next"], icon=icon_path(ICON_NEXT)),
+                self.item("Previous track", "Go back to the previous track", "control", ["/prev"],
+                          icon=icon_path(ICON_PREVIOUS)),
+                self.item("Radio", "Queue a radio mix like this song", "mix", ["radio", eid, "current"],
+                          icon=icon_path(ICON_RADIO)),
+                self.item("Similar", "Queue songs similar to this song", "mix", ["similar", eid, "current"],
+                          icon=icon_path(ICON_SIMILAR)),
+            ]
         return [
             self.item("Play now", "Skip to it right away", "play", [kind, eid, "now"]),
             self.item("Play next (after the current track)", "Add to the playback queue only",

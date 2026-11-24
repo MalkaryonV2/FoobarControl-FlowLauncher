@@ -16,6 +16,7 @@ Type `bar`, start typing a name, press Enter. Includes **Radio** and **Similar**
 
 ## Features
 
+- **Now playing, first in the list:** typing `bar` shows the song playing in foobar2000 at the top, with its title, artist, album and **cover**. Enter pauses / resumes; Shift+Enter gives Next, Previous, Radio and Similar for that song.
 - **Playback controls:** pause / resume, next, previous, stop.
 - **Instant library search** for songs, albums and artists, with cover art or artist pictures on every result.
 - **Forgiving search:** ignores capitals, accents and punctuation (`beyonce halo` finds "Beyoncé - Halo") and tolerates a small typo in longer searches.
@@ -23,6 +24,19 @@ Type `bar`, start typing a name, press Enter. Includes **Radio** and **Similar**
 - **Radio** and **Similar:** queue a mix of songs like the one you're hearing, built from your library's tags.
 - **Starts foobar2000 for you** if it's closed, then plays your choice.
 - **Zero setup:** finds foobar2000 and your Music folder by itself, and bundles its two small libraries.
+
+## Roadmap / ideas
+
+- Exact now-playing, position, volume and cover through the [beefweb](https://github.com/hyperblast/beefweb) component (no window-title guessing, works for songs outside the library).
+- `bar vol 40`, `bar seek 1:30`, `bar mute` through beefweb.
+- Show the next queued track and the elapsed time in the Now playing subtitle.
+- Lyrics, rating and "love / skip" buttons in the Now playing menu.
+- Playlists: `bar playlist <name>` and "play this album from track N".
+- Recently played and most played lists.
+- Copy "Artist - Title" to the clipboard, or open the song's folder.
+- Fuzzy search on the artist and album in one query (`bar daft discovery`).
+- Settings window instead of `config.json`.
+- Linux / macOS support through MPRIS.
 
 ## Requirements
 
@@ -51,12 +65,15 @@ There is nothing to configure. The plugin finds foobar2000 and your Windows Musi
 
 | You type | You get |
 |---|---|
-| `bar` | Pause / Resume, Next, Previous, Stop, Rescan, Radio, Similar, always in that order |
+| `bar` | **The song playing now (with its cover)**, then Pause / Resume, Next, Previous, Stop, Rescan, Radio, Similar, Random, always in that order |
+| `bar now` (or `np`, `playing`) | Only the song playing now |
 | `bar pause`, `bar next`... | The matching command |
 | `bar <name>` | Matching songs, albums and artists, each with its cover or picture |
 | `bar radio` | A radio mix based on the song playing right now |
 | `bar similar` | Songs similar to the song playing right now |
 | `bar rescan` | Rescan your music folder (after adding music) |
+
+On the **Now playing** result, **Enter** pauses / resumes. The song and its cover are found by matching foobar's window title with your indexed library, so the song must be inside `music_dir` and foobar's title must contain its title (the default does). A song outside the library is still shown, with a default icon.
 
 Press **Enter** on a result, then choose **Play now** or **Play next (after the current track)**. For a **song** there are two more buttons: **Radio** and **Similar**, which play that song now and then queue songs like it. Shift+Enter (or the right arrow) on a result shows the same choices directly.
 
@@ -133,7 +150,7 @@ Everything runs locally. The plugin reads your music folder to build its index (
 python scripts/build_zip.py
 ```
 
-This writes `dist/FoobarControl-<version>.zip`, with `plugin.json` at its root, ready to install. Pushing a tag such as `v1.1.1` (matching the `Version` in `plugin.json`) makes GitHub Actions build the zip and attach it to a release automatically.
+This writes `dist/FoobarControl-<version>.zip`, with `plugin.json` at its root, ready to install. Pushing a tag such as `v2.0` (matching the `Version` in `plugin.json`) makes GitHub Actions build the zip and attach it to a release automatically.
 
 To work on the plugin, clone the repo into `%APPDATA%\FlowLauncher\Plugins\FoobarControl` and restart Flow Launcher after each change.
 

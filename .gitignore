@@ -3,6 +3,7 @@ config.json
 index_cache.json
 index.lock
 error.log
+now_playing_cache.json
 *.tmp
 
 __pycache__/
