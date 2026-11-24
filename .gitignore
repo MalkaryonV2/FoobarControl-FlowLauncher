@@ -5,6 +5,7 @@ index.lock
 error.log
 now_playing_cache.json
 queue_state.json
+playlist_debug.txt
 *.tmp
 
 __pycache__/

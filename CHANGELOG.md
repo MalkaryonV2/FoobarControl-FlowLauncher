@@ -4,7 +4,10 @@
 - **Next in the queue:** the Now playing result shows `Next: ...` for the songs you queued through the plugin. No extra program needed.
 - **Playlists:** `bar playlist` lists your foobar2000 playlists; play one now, shuffled, or next. Matching playlists also appear in normal searches.
 - **Faster index:** rescans only read new or changed files (in parallel), and the index file is smaller and loads faster. The first scan after updating still reads everything once.
-- New settings: `index_threads`, `playlist_queue_limit`.
+- **"Play now" fix:** with Smart Shuffle (or older queued songs) foobar could start a random song and leave the chosen one next. The plugin now waits for the queue to register, checks what is playing and presses Next again if needed.
+- **Fixed order:** "Play now" is always first and "Play next" second, even if you use another choice more often.
+- Playlists: wider search for foobar's profile folder, a fallback for other path formats, playlists with unreadable content are still listed, and `bar playlist debug` writes a diagnostic file.
+- New settings: `index_threads`, `playlist_queue_limit`, `queue_settle_delay`, `play_now_retries`, `play_verify_timeout`.
 
 ## 2.0
 - **Now playing result:** typing `bar` (or `bar now`) shows the current foobar2000 song first, with title, artist, album and its cover. Enter pauses / resumes; Shift+Enter shows Next, Previous, Radio and Similar for it.

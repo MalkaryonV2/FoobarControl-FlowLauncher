@@ -28,19 +28,6 @@ Type `bar`, start typing a name, press Enter. Includes **Radio** and **Similar**
 - **Starts foobar2000 for you** if it's closed, then plays your choice.
 - **Zero setup:** finds foobar2000 and your Music folder by itself, and bundles its two small libraries.
 
-## Roadmap / ideas
-
-- Exact now-playing, position, volume and cover through the [beefweb](https://github.com/hyperblast/beefweb) component (no window-title guessing, works for songs outside the library).
-- `bar vol 40`, `bar seek 1:30`, `bar mute` through beefweb.
-- Show the elapsed time in the Now playing subtitle.
-- Lyrics, rating and "love / skip" buttons in the Now playing menu.
-- "Play this album from track N".
-- Recently played and most played lists.
-- Copy "Artist - Title" to the clipboard, or open the song's folder.
-- Fuzzy search on the artist and album in one query (`bar daft discovery`).
-- Settings window instead of `config.json`.
-- Linux / macOS support through MPRIS.
-
 ## Requirements
 
 - Windows
@@ -148,6 +135,9 @@ Optional. Open `config.json` in the plugin folder (it is created on first run).
 | `cache_hours` | How often the library is rescanned automatically (24). Rescans only read new or changed files. |
 | `index_threads` | Files read at the same time during a scan (8). |
 | `playlist_queue_limit` | Most songs queued when playing a foobar playlist (500). |
+| `queue_settle_delay` | Seconds to let foobar2000 register the queue before "Play now" skips to it (0.4). |
+| `play_now_retries` | Extra "Next" presses if another song started first, for example with Smart Shuffle (2). |
+| `play_verify_timeout` | Seconds to wait for the chosen song to appear in foobar's title (2.0). |
 
 > `config.json` and the library index live in the plugin folder. If you update by replacing that folder, keep your `config.json` (the index just rebuilds itself).
 
@@ -162,7 +152,8 @@ Every icon is a PNG in the `icons` folder. Replace a file with your own, keeping
 - **Songs don't play or aren't queued:** check that `queue_command` matches the "Add to playback queue" entry in foobar's right-click menu.
 - **Radio / Similar says it can't tell which song is playing:** foobar's window title doesn't contain the song. Search the song and use its Radio / Similar buttons.
 - **Added new music:** type `bar rescan` (only the new files are read). For a complete rebuild, delete `index_cache.json` in the plugin folder.
-- **`bar playlist` shows nothing or odd names:** the playlists are read from foobar's profile folder (the error message names the folder it looked in). Please [open an issue](../../issues/new/choose) with the first lines of `index.txt` from that folder.
+- **"Play now" starts another song (Smart Shuffle):** foobar2000 needs a moment to register the queue, so the plugin waits briefly, checks what is playing and presses Next again if needed. Raise `queue_settle_delay` (for example 0.8) if it still happens. This check needs foobar's window title to contain the song title.
+- **`bar playlist` shows nothing or odd names:** the playlists are read from foobar's profile folder. Type `bar playlist debug` to open a diagnostic file, then [open an issue](../../issues/new/choose) and attach it.
 - **Nothing happens when you type `bar`:** restart Flow Launcher, and check that Python is set up in Flow's settings.
 - **Any other error** is shown in the results and saved in `error.log` in the plugin folder. Please include it when [opening an issue](../../issues/new/choose).
 
