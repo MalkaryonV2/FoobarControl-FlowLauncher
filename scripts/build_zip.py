@@ -10,7 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 INCLUDE = ["plugin.json", "main.py", "icon.png", "icons", "lib", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md"]
-SKIP_NAMES = {"__pycache__", "config.json", "index_cache.json", "now_playing_cache.json", "index.lock", "error.log"}
+SKIP_NAMES = {"__pycache__", "config.json", "index_cache.json", "now_playing_cache.json", "queue_state.json", "index.lock", "error.log"}
 
 
 def files():

@@ -17,6 +17,7 @@ import traceback
 import tempfile
 import uuid
 import shutil
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -37,8 +38,10 @@ CACHE_PATH = HERE / "index_cache.json"
 TEMP_DIR = Path(tempfile.gettempdir()) / "FoobarControlCovers"
 LOCK_PATH = HERE / "index.lock"
 NOW_CACHE_PATH = HERE / "now_playing_cache.json"
+QUEUE_PATH = HERE / "queue_state.json"   # what the plugin queued in foobar (for "Next:")
+PLAYLIST_WORDS = ("playlist", "playlists")
 NOW_NAMES = ("now", "np", "playing", "current", "nowplaying")  # `bar now` also shows the current song
-INDEX_VERSION = 2  # bump when the index gains fields (it is rebuilt in the background)
+INDEX_VERSION = 3  # bump when the index gains fields (it is rebuilt in the background)
 ERROR_LOG = HERE / "error.log"
 ICON = "icon.png"
 
@@ -80,6 +83,8 @@ DEFAULT_CONFIG = {
     "startup_delay": 3,       # seconds to let foobar2000 finish starting before sending it commands
     "startup_timeout": 30,    # longest wait for foobar2000's window after starting it
     "command_timeout": 8,     # longest wait for one foobar command to be accepted
+    "index_threads": 8,       # files whose tags are read at the same time during a scan
+    "playlist_queue_limit": 500,  # most songs queued when you play a foobar playlist
 }
 SETTINGS = dict(DEFAULT_CONFIG)
 
@@ -474,6 +479,161 @@ def save_now_cache(key, track):
         pass
 
 
+# ---- what the plugin has queued in foobar ("Next:" in the Now playing result) -------------------
+# foobar2000 has no way to ask it for its queue from outside without an extra component, so the
+# plugin keeps its own record of what IT queued, and drops entries as they start playing.
+
+def load_queue():
+    try:
+        items = json.loads(QUEUE_PATH.read_text(encoding="utf-8")).get("items", [])
+        return [i for i in items if time.time() - i.get("t", 0) < 12 * 3600]
+    except Exception:
+        return []
+
+
+def save_queue(items):
+    try:
+        QUEUE_PATH.write_text(json.dumps({"items": items[-500:]}), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def clear_queue():
+    try:
+        QUEUE_PATH.unlink()
+    except OSError:
+        pass
+
+
+def record_queue(entries):
+    """entries: [(path, label)] just sent to foobar's playback queue."""
+    now = time.time()
+    save_queue(load_queue() + [{"p": os.path.normcase(p), "l": l, "t": now} for p, l in entries])
+
+
+def pop_queue_until(path):
+    """The song at `path` has started: forget it and everything queued before it."""
+    items = load_queue()
+    key = os.path.normcase(path)
+    for i, it in enumerate(items):
+        if it["p"] == key:
+            items = items[i + 1:]
+            save_queue(items)
+            break
+    return items
+
+
+def track_label(t):
+    return " - ".join(x for x in [t.get("artist", ""), t.get("title", "")] if x) or Path(t["path"]).stem
+
+
+# ---- foobar2000's own playlists -------------------------------------------------------------------
+# foobar saves each playlist as a .fpl file in its profile folder. The format is closed, so the
+# plugin only picks the file paths out of it (they are stored as "file://..." text).
+
+def foobar_profile_dirs(cfg):
+    """Possible foobar2000 profile folders, the most likely first."""
+    out = []
+    fdir = os.path.dirname(cfg.get("foobar_path", "") or "")
+    if fdir and os.path.exists(os.path.join(fdir, "portable_mode_enabled")):
+        out += [os.path.join(fdir, "profile"), fdir]
+    appdata = os.getenv("APPDATA", "")
+    if appdata:
+        out += [os.path.join(appdata, "foobar2000-v2"), os.path.join(appdata, "foobar2000")]
+    if fdir:
+        out += [os.path.join(fdir, "profile")]
+    seen, res = set(), []
+    for d in out:
+        if d not in seen and os.path.isdir(d):
+            seen.add(d)
+            res.append(d)
+    return res
+
+
+def playlists_dir(cfg):
+    """The folder holding the .fpl files (named playlists-v2.0, playlists-v1.4... by version)."""
+    for prof in foobar_profile_dirs(cfg):
+        best, best_time = "", -1
+        try:
+            subs = [d for d in os.listdir(prof) if d.lower().startswith("playlists")]
+        except OSError:
+            continue
+        for d in subs:
+            full = os.path.join(prof, d)
+            try:
+                fpls = [f for f in os.listdir(full) if f.lower().endswith(".fpl")]
+                if fpls:
+                    t = max(os.path.getmtime(os.path.join(full, f)) for f in fpls)
+                    if t > best_time:
+                        best, best_time = full, t
+            except OSError:
+                continue
+        if best:
+            return best
+    return ""
+
+
+def playlist_names(pdir, stems):
+    """{stem: name} read from foobar's playlist index (index.txt). Anything not understood
+    simply has no name, and the plugin falls back to describing the playlist by its content."""
+    names = {}
+    for idx in ("index.txt",):
+        try:
+            lines = (Path(pdir) / idx).read_text(encoding="utf-8-sig", errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            low = line.lower()
+            for stem in stems:
+                if stem.lower() in low:
+                    name = re.sub(re.escape(stem) + r"(\.fpl)?", "", line, flags=re.I)
+                    name = name.strip(" \t|=:;,\"'[]{}()<>")
+                    if name:
+                        names[stem] = name
+    return names
+
+
+def playlist_files(path, cfg=None):
+    """File paths stored in a .fpl, in playlist order (a file listed twice is kept once)."""
+    try:
+        data = Path(path).read_bytes()
+    except OSError:
+        return []
+    base = os.path.dirname((cfg or SETTINGS).get("foobar_path", "") or "")
+    out, seen = [], set()
+    for m in re.finditer(rb"file://([^\x00]+)", data):
+        f = m.group(1).decode("utf-8", "replace")
+        if not os.path.isabs(f) and base:  # portable installs store paths relative to foobar
+            f = os.path.normpath(os.path.join(base, f))
+        k = os.path.normcase(f)
+        if k not in seen:
+            seen.add(k)
+            out.append(f)
+    return out
+
+
+def list_playlists(cfg):
+    """[{id, name, path}] for every saved foobar playlist, sorted by name."""
+    pdir = playlists_dir(cfg)
+    if not pdir:
+        return []
+    files = sorted(f for f in os.listdir(pdir) if f.lower().endswith(".fpl"))
+    stems = [os.path.splitext(f)[0] for f in files]
+    names = playlist_names(pdir, stems)
+    out = []
+    for f, stem in zip(files, stems):
+        full = os.path.join(pdir, f)
+        name = names.get(stem)
+        if not name:
+            first = playlist_files(full, cfg)[:1]
+            if not first:
+                continue  # empty playlist: nothing to play
+            name = "Playlist (starts with %s)" % Path(first[0]).stem
+        out.append({"id": short_id("playlist:" + stem), "name": name, "path": full})
+    out.sort(key=lambda x: norm(x["name"]))
+    return out
+
+
 def touch_lock():
     try:
         os.utime(str(LOCK_PATH), None)
@@ -481,37 +641,79 @@ def touch_lock():
         pass
 
 
-def build_index(cfg):
+def scan_files(cfg):
+    """(path, folder, mtime, size) of every music file. scandir gives the size and date for
+    free (no extra disk access on Windows), which is what makes a rescan fast."""
     exts = {e.lower() for e in cfg["extensions"]}
-    tracks = []
-    for root, _dirs, files in os.walk(cfg["music_dir"]):
+    stack = [cfg["music_dir"]]
+    while stack:
+        root = stack.pop()
         touch_lock()
-        for name in files:
-            if os.path.splitext(name)[1].lower() in exts:
-                p = os.path.join(root, name)
-                title, artist, album, track, disc, genre, year = read_tags(p)
-                tracks.append({
-                    "id": short_id(p),
-                    "path": p,
-                    "dir": root,
-                    "title": title,
-                    "artist": artist,
-                    "album": album,
-                    "track": track,
-                    "disc": disc,
-                    "hay": norm(" ".join([title, artist, album, Path(p).stem])),
-                    "ntitle": norm(title),
-                    "genre": genre,
-                    "year": year,
-                    "nartist": primary_artist(artist),
-                    "genres": split_genres(genre),
-                    "nalbum": norm(album),
-                })
-                if len(tracks) % 50 == 0:
+        try:
+            with os.scandir(root) as it:
+                for e in it:
+                    try:
+                        if e.is_dir(follow_symlinks=False):
+                            stack.append(e.path)
+                        elif os.path.splitext(e.name)[1].lower() in exts:
+                            st = e.stat()
+                            yield e.path, root, st.st_mtime_ns, st.st_size
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+
+
+def make_track(p, root, mtime, size):
+    title, artist, album, track, disc, genre, year = read_tags(p)
+    return {
+        "id": short_id(p),
+        "path": p,
+        "dir": root,
+        "title": title,
+        "artist": artist,
+        "album": album,
+        "track": track,
+        "disc": disc,
+        "ntitle": norm(title),
+        "genre": genre,
+        "year": year,
+        "nartist": primary_artist(artist),
+        "genres": split_genres(genre),
+        "nalbum": norm(album),
+        "mtime": mtime,
+        "size": size,
+    }
+
+
+def build_index(cfg):
+    """Incremental: a file whose date and size did not change keeps its saved tags, only new or
+    modified files are read (in parallel). The first scan reads everything; later ones take seconds."""
+    old = {}
+    try:
+        prev = json.loads(CACHE_PATH.read_text(encoding="utf-8"))
+        if prev.get("music_dir") == cfg["music_dir"] and prev.get("version") == INDEX_VERSION:
+            old = {t["path"]: t for t in prev.get("tracks", [])}
+    except Exception:
+        pass
+    tracks, todo = [], []
+    for p, root, mtime, size in scan_files(cfg):
+        o = old.get(p)
+        if o is not None and o.get("mtime") == mtime and o.get("size") == size:
+            tracks.append(o)
+        else:
+            todo.append((p, root, mtime, size))
+    if todo:
+        workers = max(1, int(cfg.get("index_threads", 8)))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for i, t in enumerate(pool.map(lambda a: make_track(*a), todo), 1):
+                tracks.append(t)
+                if i % 50 == 0:
                     touch_lock()
+    tracks.sort(key=lambda t: t["path"])
     data = {"version": INDEX_VERSION, "built": time.time(), "music_dir": cfg["music_dir"], "tracks": tracks}
     tmp = CACHE_PATH.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data), encoding="utf-8")
+    tmp.write_text(json.dumps(data, separators=(",", ":")), encoding="utf-8")  # compact = loads faster
     os.replace(str(tmp), str(CACHE_PATH))  # atomic: a half-written index is never read
     return data
 
@@ -838,6 +1040,8 @@ COMMANDS = [
      ["similar", "sim"]),
     ("Random track", "Play a random track from foobar's playlist", "control", ["/rand"], ICON_NEXT,
      ["random", "rand", "shuffle"]),
+    ("Playlists", "Your foobar2000 playlists", "Flow.Launcher.ChangeQuery", ["playlist"], ICON_ALBUM,
+     ["playlist", "playlists", "pl"]),
 ]
 
 
@@ -902,6 +1106,11 @@ class FoobarBar(FlowLauncher):
             now = self.now_playing_items()
             return now + (self.command_items("") if q == "" else [])
 
+        first, _, rest = q.partition(" ")
+        if first.lower() in PLAYLIST_WORDS:
+            clear_temp()
+            return self.playlist_items(rest.strip())
+
         results = self.command_items(norm(q)) if " " not in q else []
 
         clear_temp()
@@ -930,6 +1139,7 @@ class FoobarBar(FlowLauncher):
             else:
                 results.append(self.pick_item(obj["name"], "Artist  -  %d tracks" % len(obj["tracks"]),
                                               "artist", obj["id"], artist_pics.get(obj["id"]) or icon_path(ICON_ARTIST), int(s * 100)))
+        results += self.playlist_matches(q)
         if not results:
             results.append(self.item("No match", "Nothing found for '%s'. Type '%s rescan' if you added music." % (q, action_keyword()),
                                      "noop", []))
@@ -938,6 +1148,8 @@ class FoobarBar(FlowLauncher):
     def mode_step(self, state):
         kind, _, eid = state.partition(":")
         clear_temp()
+        if kind == "playlist":
+            return self.playlist_mode_step(eid)
         tracks = resolve(get_index(self.cfg)["tracks"], kind, eid)
         if not tracks:
             return [self.item("Not found", "Try '%s rescan'" % action_keyword(), "noop", [])]
@@ -975,6 +1187,7 @@ class FoobarBar(FlowLauncher):
         if running is None:  # not Windows: can't read foobar's window
             return []
         if running is False:
+            clear_queue()
             return [self.item("foobar2000 is not running", "Pick a song below and it will start for you.",
                               "noop", [], icon=icon_path(ICON_SONG), score=300000)]
         raw, clean = playing_window_title()
@@ -987,6 +1200,9 @@ class FoobarBar(FlowLauncher):
                               "control", ["/playpause"], icon=icon_path(ICON_SONG), score=300000)]
         sub = "Now playing  -  " + (" - ".join(x for x in [t.get("artist", ""), t.get("album", "")] if x)
                                     or "press Enter to pause / resume")
+        upcoming = pop_queue_until(t["path"])  # this song has started: drop it from the queue record
+        if upcoming:
+            sub += "   |   Next: " + upcoming[0]["l"]
         return [self.item(t["title"], sub, "control", ["/playpause"],
                           icon=cover_for(t) or icon_path(ICON_SONG), context=["now", t["id"]], score=300000)]
 
@@ -1003,6 +1219,8 @@ class FoobarBar(FlowLauncher):
                 self.item("Similar", "Queue songs similar to this song", "mix", ["similar", eid, "current"],
                           icon=icon_path(ICON_SIMILAR)),
             ]
+        if kind == "playlist":
+            return self.playlist_buttons(eid, "Playlist")
         return [
             self.item("Play now", "Skip to it right away", "play", [kind, eid, "now"]),
             self.item("Play next (after the current track)", "Add to the playback queue only",
@@ -1024,6 +1242,7 @@ class FoobarBar(FlowLauncher):
         that follow aren't lost while it starts up (and resumes its last song)."""
         if foobar_running() is not False:  # running, or can't tell (not Windows)
             return
+        clear_queue()  # a fresh foobar starts with an empty queue
         try:
             subprocess.Popen([self.cfg["foobar_path"]], stdin=subprocess.DEVNULL,
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
@@ -1040,15 +1259,85 @@ class FoobarBar(FlowLauncher):
         self.foobar(flag)
 
     def play(self, kind, eid, mode):
-        data = get_index(self.cfg)
-        files = [t["path"] for t in resolve(data["tracks"], kind, eid)]
-        if not files:
+        """mode: now | next | shuffle (shuffle = play now, in random order)."""
+        if kind == "playlist":
+            entries = self.playlist_entries(eid)
+        else:
+            entries = [(t["path"], track_label(t)) for t in resolve(get_index(self.cfg)["tracks"], kind, eid)]
+        if not entries:
             return
+        if mode == "shuffle":
+            random.shuffle(entries)
         self.ensure_foobar()
-        for i in range(0, len(files), 40):
-            self.foobar("/context_command:" + self.cfg["queue_command"], *files[i:i + 40])
-        if mode == "now":
+        self.queue_files(entries)
+        if mode in ("now", "shuffle"):
             self.foobar("/next")
+
+    def playlist_entries(self, pid):
+        """[(path, label)] of a foobar playlist, limited to songs that still exist."""
+        pl = next((x for x in list_playlists(self.cfg) if x["id"] == pid), None)
+        if pl is None:
+            return []
+        files = [f for f in playlist_files(pl["path"], self.cfg) if os.path.isfile(f)]
+        by_path = {os.path.normcase(t["path"]): t for t in get_index(self.cfg)["tracks"]}
+        out = []
+        for f in files[: int(self.cfg.get("playlist_queue_limit", 500))]:
+            t = by_path.get(os.path.normcase(f))
+            out.append((f, track_label(t) if t else Path(f).stem))
+        return out
+
+    def playlist_cover(self, files):
+        for f in files[:3]:
+            c = cover_for({"path": f, "dir": os.path.dirname(f)})
+            if c:
+                return c
+        return ""
+
+    def playlist_items(self, flt):
+        """`bar playlist [name]`: every foobar2000 playlist, each a suggestion."""
+        pls = list_playlists(self.cfg)
+        if not pls:
+            where = playlists_dir(self.cfg) or ", ".join(foobar_profile_dirs(self.cfg)) or "foobar2000's profile folder"
+            return [self.item("No foobar2000 playlists found",
+                              "Looked in %s. foobar saves playlists when it closes or after a change." % where,
+                              "noop", [], icon=icon_path(ICON_ALBUM))]
+        words = norm(flt).split()
+        out = []
+        for i, pl in enumerate(pls):
+            if words and not all(w in norm(pl["name"]) for w in words):
+                continue
+            files = playlist_files(pl["path"], self.cfg)
+            out.append(self.pick_item(pl["name"], "Playlist  -  %d track%s" % (len(files), "" if len(files) == 1 else "s"), "playlist", pl["id"],
+                                      self.playlist_cover(files) or icon_path(ICON_ALBUM), 50000 - i))
+        return out or [self.item("No playlist matches", "Nothing named '%s' in foobar2000." % flt, "noop", [])]
+
+    def playlist_matches(self, q):
+        """Playlists whose name matches a normal search (a few, below songs / albums / artists)."""
+        words = norm(q).split()
+        if not words:
+            return []
+        out = []
+        for pl in list_playlists(self.cfg):
+            if all(w in norm(pl["name"]) for w in words):
+                out.append(self.pick_item(pl["name"], "Playlist", "playlist", pl["id"], icon_path(ICON_ALBUM), 90))
+            if len(out) >= 3:
+                break
+        return out
+
+    def playlist_buttons(self, pid, label, icon=None):
+        icon = icon or icon_path(ICON_ALBUM)
+        return [
+            self.item("Play now", label, "play", ["playlist", pid, "now"], icon=icon),
+            self.item("Play now, shuffled", label, "play", ["playlist", pid, "shuffle"], icon=icon_path(ICON_RADIO)),
+            self.item("Play next (after the current track)", label, "play", ["playlist", pid, "next"], icon=icon),
+        ]
+
+    def playlist_mode_step(self, pid):
+        pl = next((x for x in list_playlists(self.cfg) if x["id"] == pid), None)
+        if pl is None:
+            return [self.item("Playlist not found", "foobar may have renamed or deleted it.", "noop", [])]
+        icon = self.playlist_cover(playlist_files(pl["path"], self.cfg)) or icon_path(ICON_ALBUM)
+        return self.playlist_buttons(pid, "Playlist: " + pl["name"], icon)
 
     def mix_buttons(self, sid):
         return [
@@ -1082,9 +1371,12 @@ class FoobarBar(FlowLauncher):
         return [self.item("%s: %s" % (label, who), sub, "mix", [kind, seed["id"], "current"],
                           icon=cover_for(seed) or icon, score=200000)]
 
-    def queue_files(self, files):
+    def queue_files(self, entries):
+        """entries: [(path, label)]. Adds them to foobar's playback queue and remembers them."""
+        files = [p for p, _l in entries]
         for i in range(0, len(files), 40):
             self.foobar("/context_command:" + self.cfg["queue_command"], *files[i:i + 40])
+        record_queue(entries)
 
     def mix(self, kind, sid, mode):
         """kind: radio | similar. mode: 'current' = the song is already playing, only queue
@@ -1101,9 +1393,10 @@ class FoobarBar(FlowLauncher):
             else:
                 self.foobar("/context_command:" + command, seed["path"])
             return
-        files = [t["path"] for t in build_mix(kind, seed, data["tracks"], self.cfg)]
+        picks = build_mix(kind, seed, data["tracks"], self.cfg)
         if mode == "now":
-            files.insert(0, seed["path"])
+            picks.insert(0, seed)
+        files = [(t["path"], track_label(t)) for t in picks]
         if not files:
             return
         self.queue_files(files)

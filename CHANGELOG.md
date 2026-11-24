@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.1
+- **Next in the queue:** the Now playing result shows `Next: ...` for the songs you queued through the plugin. No extra program needed.
+- **Playlists:** `bar playlist` lists your foobar2000 playlists; play one now, shuffled, or next. Matching playlists also appear in normal searches.
+- **Faster index:** rescans only read new or changed files (in parallel), and the index file is smaller and loads faster. The first scan after updating still reads everything once.
+- New settings: `index_threads`, `playlist_queue_limit`.
+
 ## 2.0
 - **Now playing result:** typing `bar` (or `bar now`) shows the current foobar2000 song first, with title, artist, album and its cover. Enter pauses / resumes; Shift+Enter shows Next, Previous, Radio and Similar for it.
 - Shows "Nothing playing" or "foobar2000 is not running" when relevant, and still shows songs that are not in your library.

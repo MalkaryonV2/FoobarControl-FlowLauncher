@@ -17,6 +17,9 @@ Type `bar`, start typing a name, press Enter. Includes **Radio** and **Similar**
 ## Features
 
 - **Now playing, first in the list:** typing `bar` shows the song playing in foobar2000 at the top, with its title, artist, album and **cover**. Enter pauses / resumes; Shift+Enter gives Next, Previous, Radio and Similar for that song.
+- **Next in the queue:** the Now playing result also shows the next song you queued through the plugin.
+- **Your foobar2000 playlists:** `bar playlist` lists them all; pick one to play it, play it shuffled, or queue it next.
+- **Fast rescans:** only new or changed files are re-read, so updating the index takes seconds.
 - **Playback controls:** pause / resume, next, previous, stop.
 - **Instant library search** for songs, albums and artists, with cover art or artist pictures on every result.
 - **Forgiving search:** ignores capitals, accents and punctuation (`beyonce halo` finds "Beyoncé - Halo") and tolerates a small typo in longer searches.
@@ -29,9 +32,9 @@ Type `bar`, start typing a name, press Enter. Includes **Radio** and **Similar**
 
 - Exact now-playing, position, volume and cover through the [beefweb](https://github.com/hyperblast/beefweb) component (no window-title guessing, works for songs outside the library).
 - `bar vol 40`, `bar seek 1:30`, `bar mute` through beefweb.
-- Show the next queued track and the elapsed time in the Now playing subtitle.
+- Show the elapsed time in the Now playing subtitle.
 - Lyrics, rating and "love / skip" buttons in the Now playing menu.
-- Playlists: `bar playlist <name>` and "play this album from track N".
+- "Play this album from track N".
 - Recently played and most played lists.
 - Copy "Artist - Title" to the clipboard, or open the song's folder.
 - Fuzzy search on the artist and album in one query (`bar daft discovery`).
@@ -67,6 +70,8 @@ There is nothing to configure. The plugin finds foobar2000 and your Windows Musi
 |---|---|
 | `bar` | **The song playing now (with its cover)**, then Pause / Resume, Next, Previous, Stop, Rescan, Radio, Similar, Random, always in that order |
 | `bar now` (or `np`, `playing`) | Only the song playing now |
+| `bar playlist` | Every foobar2000 playlist, as suggestions |
+| `bar playlist chill` | Only the playlists whose name contains "chill" |
 | `bar pause`, `bar next`... | The matching command |
 | `bar <name>` | Matching songs, albums and artists, each with its cover or picture |
 | `bar radio` | A radio mix based on the song playing right now |
@@ -80,6 +85,24 @@ Press **Enter** on a result, then choose **Play now** or **Play next (after the 
 Playback uses foobar's playback queue, so your playlist is never modified and foobar returns to it when the queued tracks end.
 
 Covers come from the tags in your files. Artists use an embedded artist picture, a foobar artist image, or an `artist.jpg` in the artist's folder. When a result has none, it shows a default icon.
+
+## Next in the queue
+
+The Now playing result adds `Next: Artist - Title` when you have queued songs. foobar2000 cannot report its queue to other programs without an extra component, so the plugin keeps its own record of **what it queued** (Play next, albums, playlists, Radio, Similar) and forgets each song as it starts playing. This means:
+
+- Songs you add to foobar's queue by hand are not known to the plugin.
+- If you open `bar` rarely, the record catches up the next time the current song is one of the queued ones.
+- The record is emptied when foobar2000 is closed (its queue is empty again on the next start) and after 12 hours.
+
+## Playlists
+
+`bar playlist` shows the playlists foobar2000 has saved, each with its track count and the cover of its first songs. Press Enter, then choose **Play now**, **Play now, shuffled** or **Play next**. Playlists are queued like albums (the playlist itself is never changed), at most `playlist_queue_limit` songs (500). A playlist whose name matches what you type also shows up in a normal `bar <name>` search.
+
+The plugin reads foobar's own playlist files (`.fpl`) in its profile folder (`%APPDATA%\foobar2000-v2\playlists-v2.0`, or the `profile` folder of a portable install). That format is closed, so the plugin only takes out the file paths and the names from foobar's playlist index. Things to know:
+
+- foobar saves its playlists when it closes and after changes, so a playlist you just created may show up a little later.
+- A playlist whose name can't be read is shown as "Playlist (starts with ...)".
+- Songs that no longer exist on disk are skipped; auto-playlists and playlists of streams or CDs are not supported.
 
 ## Radio and Similar
 
@@ -122,7 +145,9 @@ Optional. Open `config.json` in the plugin folder (it is created on first run).
 | `cover_mode` | `temp` (default) shows covers through a temp folder emptied on every search. `data_uri` writes nothing at all but needs a recent Flow Launcher. |
 | `data_uri_max_kb` | With `data_uri`, covers bigger than this are skipped (400). |
 | `queue_command` | The foobar context-menu command used to queue tracks (`Add to playback queue`). |
-| `cache_hours` | How often the library is rescanned automatically (24). |
+| `cache_hours` | How often the library is rescanned automatically (24). Rescans only read new or changed files. |
+| `index_threads` | Files read at the same time during a scan (8). |
+| `playlist_queue_limit` | Most songs queued when playing a foobar playlist (500). |
 
 > `config.json` and the library index live in the plugin folder. If you update by replacing that folder, keep your `config.json` (the index just rebuilds itself).
 
@@ -136,7 +161,8 @@ Every icon is a PNG in the `icons` folder. Replace a file with your own, keeping
 - **"No music found":** set `music_dir` in `config.json`.
 - **Songs don't play or aren't queued:** check that `queue_command` matches the "Add to playback queue" entry in foobar's right-click menu.
 - **Radio / Similar says it can't tell which song is playing:** foobar's window title doesn't contain the song. Search the song and use its Radio / Similar buttons.
-- **Added new music:** type `bar rescan`.
+- **Added new music:** type `bar rescan` (only the new files are read). For a complete rebuild, delete `index_cache.json` in the plugin folder.
+- **`bar playlist` shows nothing or odd names:** the playlists are read from foobar's profile folder (the error message names the folder it looked in). Please [open an issue](../../issues/new/choose) with the first lines of `index.txt` from that folder.
 - **Nothing happens when you type `bar`:** restart Flow Launcher, and check that Python is set up in Flow's settings.
 - **Any other error** is shown in the results and saved in `error.log` in the plugin folder. Please include it when [opening an issue](../../issues/new/choose).
 
@@ -150,7 +176,7 @@ Everything runs locally. The plugin reads your music folder to build its index (
 python scripts/build_zip.py
 ```
 
-This writes `dist/FoobarControl-<version>.zip`, with `plugin.json` at its root, ready to install. Pushing a tag such as `v2.0` (matching the `Version` in `plugin.json`) makes GitHub Actions build the zip and attach it to a release automatically.
+This writes `dist/FoobarControl-<version>.zip`, with `plugin.json` at its root, ready to install. Pushing a tag such as `v2.1` (matching the `Version` in `plugin.json`) makes GitHub Actions build the zip and attach it to a release automatically.
 
 To work on the plugin, clone the repo into `%APPDATA%\FlowLauncher\Plugins\FoobarControl` and restart Flow Launcher after each change.
 

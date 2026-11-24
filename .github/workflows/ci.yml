@@ -18,6 +18,6 @@ jobs:
           import zipfile, glob
           z = zipfile.ZipFile(glob.glob("dist/*.zip")[0]); n = z.namelist()
           assert "plugin.json" in n, "plugin.json must be at the zip root"
-          assert not any(x.endswith(("config.json", "index_cache.json", "now_playing_cache.json", "error.log")) for x in n)
+          assert not any(x.endswith(("config.json", "index_cache.json", "now_playing_cache.json", "queue_state.json", "error.log")) for x in n)
           print(len(n), "files OK")
           PY
