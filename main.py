@@ -448,17 +448,23 @@ def match_now_playing(titles, tracks):
 
 
 def playing_window_title():
-    """(raw window title, cleaned 'Artist - Title') of the song foobar2000 is showing, or
-    (None, None) when nothing is playing. A stopped foobar only shows 'foobar2000 v2.x', and
-    other foobar windows (Preferences...) are ignored because they carry no '[foobar2000]' tag."""
-    for title, visible in (foobar_windows() or []):
-        if not (visible and title) or "[foobar2000" not in title.lower():
+    """Return foobar's playing-window title, including custom title formats without
+    the default [foobar2000] suffix. Ignore preferences and unrelated windows by
+    requiring a match against the indexed library when the suffix is absent."""
+    windows = [(title, visible) for title, visible in (foobar_windows() or [])
+               if visible and title]
+    for title, _visible in windows:
+        if "[foobar2000" in title.lower():
+            clean = re.sub(r"\\s*\\[foobar2000[^\\]]*\\]", "", title, flags=re.I).strip()
+            if clean and not norm(clean).startswith("foobar2000"):
+                return title, clean
+    tracks = get_index(SETTINGS).get("tracks", [])
+    for title, _visible in windows:
+        if norm(title).startswith(("foobar2000", "preferences", "properties")):
             continue
-        clean = re.sub(r"\s*\[foobar2000[^\]]*\]", "", title, flags=re.I).strip()
-        if clean and not norm(clean).startswith("foobar2000"):
-            return title, clean
+        if match_now_playing([title], tracks):
+            return title, title.strip()
     return None, None
-
 
 def load_now_cache(key):
     """The track found for this exact window title last time (saves loading the whole index)."""
@@ -535,7 +541,9 @@ def foobar_profile_dirs(cfg):
     """Possible foobar2000 profile folders, the most likely first."""
     out = []
     fdir = os.path.dirname(cfg.get("foobar_path", "") or "")
-    if fdir and os.path.exists(os.path.join(fdir, "portable_mode_enabled")):
+    if fdir:
+        # Portable installs may keep the profile either beside the executable or
+        # in a dedicated profile/ directory.
         out += [os.path.join(fdir, "profile"), fdir]
     appdata = os.getenv("APPDATA", "")
     if appdata:
@@ -551,9 +559,9 @@ def foobar_profile_dirs(cfg):
 
 
 def playlists_dir(cfg):
-    """The folder holding the .fpl files (named playlists-v2.0, playlists-v1.4... by version)."""
+    """Find the most recently updated foobar playlist directory across all profiles."""
+    candidates = []
     for prof in foobar_profile_dirs(cfg):
-        best, best_time = "", -1
         try:
             subs = [d for d in os.listdir(prof) if d.lower().startswith("playlists")]
         except OSError:
@@ -563,47 +571,60 @@ def playlists_dir(cfg):
             try:
                 fpls = [f for f in os.listdir(full) if f.lower().endswith(".fpl")]
                 if fpls:
-                    t = max(os.path.getmtime(os.path.join(full, f)) for f in fpls)
-                    if t > best_time:
-                        best, best_time = full, t
+                    newest = max(os.path.getmtime(os.path.join(full, f)) for f in fpls)
+                    candidates.append((newest, full))
             except OSError:
                 continue
-        if best:
-            return best
-    return ""
+    return max(candidates)[1] if candidates else ""
 
 
 def playlist_names(pdir, stems):
-    """{stem: name} read from foobar's playlist index (index.txt). Anything not understood
-    simply has no name, and the plugin falls back to describing the playlist by its content."""
+    """Read playlist names from foobar's index.txt, avoiding partial stem collisions."""
     names = {}
-    for idx in ("index.txt",):
-        try:
-            lines = (Path(pdir) / idx).read_text(encoding="utf-8-sig", errors="replace").splitlines()
-        except OSError:
-            continue
-        for line in lines:
-            low = line.lower()
-            for stem in stems:
-                if stem.lower() in low:
-                    name = re.sub(re.escape(stem) + r"(\.fpl)?", "", line, flags=re.I)
-                    name = name.strip(" \t|=:;,\"'[]{}()<>")
-                    if name:
-                        names[stem] = name
+    try:
+        lines = (Path(pdir) / "index.txt").read_text(
+            encoding="utf-8-sig", errors="replace").splitlines()
+    except OSError:
+        return names
+    for line in lines:
+        for stem in stems:
+            pattern = re.compile(
+                r"(?<![A-Za-z0-9])" + re.escape(stem) +
+                r"(?:\.fpl)?(?![A-Za-z0-9])", re.I)
+            if pattern.search(line):
+                name = pattern.sub("", line).strip(" \\t|=:;,\\\"'[]{}()<>")
+                if name:
+                    names[stem] = name
     return names
 
 
 def playlist_files(path, cfg=None):
-    """File paths stored in a .fpl, in playlist order (a file listed twice is kept once)."""
+    """Extract file locations from a saved .fpl without depending on its binary layout.
+    foobar's FPL format is closed; scan both UTF-8 and UTF-16LE string representations."""
+    from urllib.parse import unquote
     try:
         data = Path(path).read_bytes()
     except OSError:
         return []
     base = os.path.dirname((cfg or SETTINGS).get("foobar_path", "") or "")
+    candidates = [m.group(1).decode("utf-8", "replace")
+                  for m in re.finditer(rb"file://([^\x00\r\n]+)", data, re.I)]
+    try:
+        wide = data.decode("utf-16-le", "ignore")
+        candidates.extend(m.group(1) for m in re.finditer(r"file://([^\x00\r\n]+)", wide, re.I))
+    except Exception:
+        pass
     out, seen = [], set()
-    for m in re.finditer(rb"file://([^\x00]+)", data):
-        f = m.group(1).decode("utf-8", "replace")
-        if not os.path.isabs(f) and base:  # portable installs store paths relative to foobar
+    for raw in candidates:
+        f = unquote(raw.strip().strip('"'))
+        if f.startswith("///") and re.match(r"^/[A-Za-z]:", f[2:]):
+            f = f[2:]
+        elif f.startswith("//") and not f.startswith("///"):
+            f = "\\\\" + f.lstrip("/")
+        elif f.startswith("/"):
+            f = f.lstrip("/")
+        f = f.replace("/", os.sep) if os.name == "nt" else f
+        if not os.path.isabs(f) and base:
             f = os.path.normpath(os.path.join(base, f))
         k = os.path.normcase(f)
         if k not in seen:
@@ -626,9 +647,7 @@ def list_playlists(cfg):
         name = names.get(stem)
         if not name:
             first = playlist_files(full, cfg)[:1]
-            if not first:
-                continue  # empty playlist: nothing to play
-            name = "Playlist (starts with %s)" % Path(first[0]).stem
+            name = ("Playlist (starts with %s)" % Path(first[0]).stem) if first else "Empty playlist"
         out.append({"id": short_id("playlist:" + stem), "name": name, "path": full})
     out.sort(key=lambda x: norm(x["name"]))
     return out
@@ -1259,7 +1278,7 @@ class FoobarBar(FlowLauncher):
         self.foobar(flag)
 
     def play(self, kind, eid, mode):
-        """mode: now | next | shuffle (shuffle = play now, in random order)."""
+        """Play immediately via foobar's context Play command, or queue after current."""
         if kind == "playlist":
             entries = self.playlist_entries(eid)
         else:
@@ -1269,9 +1288,16 @@ class FoobarBar(FlowLauncher):
         if mode == "shuffle":
             random.shuffle(entries)
         self.ensure_foobar()
-        self.queue_files(entries)
         if mode in ("now", "shuffle"):
-            self.foobar("/next")
+            # Start the first selected item directly. Queue the remainder in order;
+            # this makes the requested item start even when the playlist uses shuffle.
+            self.foobar("/command:Flush playback queue")
+            clear_queue()
+            self.foobar("/context_command:Play", entries[0][0])
+            if len(entries) > 1:
+                self.queue_files(entries[1:])
+        else:
+            self.queue_files(entries)
 
     def playlist_entries(self, pid):
         """[(path, label)] of a foobar playlist, limited to songs that still exist."""
@@ -1295,6 +1321,8 @@ class FoobarBar(FlowLauncher):
 
     def playlist_items(self, flt):
         """`bar playlist [name]`: every foobar2000 playlist, each a suggestion."""
+        if foobar_running():
+            self.foobar("/command:Save all playlists")
         pls = list_playlists(self.cfg)
         if not pls:
             where = playlists_dir(self.cfg) or ", ".join(foobar_profile_dirs(self.cfg)) or "foobar2000's profile folder"
@@ -1313,6 +1341,8 @@ class FoobarBar(FlowLauncher):
 
     def playlist_matches(self, q):
         """Playlists whose name matches a normal search (a few, below songs / albums / artists)."""
+        if foobar_running():
+            self.foobar("/command:Save all playlists")
         words = norm(q).split()
         if not words:
             return []
@@ -1328,8 +1358,8 @@ class FoobarBar(FlowLauncher):
         icon = icon or icon_path(ICON_ALBUM)
         return [
             self.item("Play now", label, "play", ["playlist", pid, "now"], icon=icon),
-            self.item("Play now, shuffled", label, "play", ["playlist", pid, "shuffle"], icon=icon_path(ICON_RADIO)),
             self.item("Play next (after the current track)", label, "play", ["playlist", pid, "next"], icon=icon),
+            self.item("Play now, shuffled", label, "play", ["playlist", pid, "shuffle"], icon=icon_path(ICON_RADIO)),
         ]
 
     def playlist_mode_step(self, pid):
@@ -1395,13 +1425,12 @@ class FoobarBar(FlowLauncher):
             return
         picks = build_mix(kind, seed, data["tracks"], self.cfg)
         if mode == "now":
-            picks.insert(0, seed)
-        files = [(t["path"], track_label(t)) for t in picks]
-        if not files:
-            return
-        self.queue_files(files)
-        if mode == "now":
-            self.foobar("/next")
+            self.foobar("/command:Flush playback queue")
+            clear_queue()
+            self.foobar("/context_command:Play", seed["path"])
+        files = [(t["path"], track_label(t)) for t in picks if mode == "current" or t["path"] != seed["path"]]
+        if files:
+            self.queue_files(files)
 
     def reindex(self):
         start_background_build()
