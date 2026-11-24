@@ -28,19 +28,6 @@ Type `bar`, start typing a name, press Enter. Includes **Radio** and **Similar**
 - **Starts foobar2000 for you** if it's closed, then plays your choice.
 - **Zero setup:** finds foobar2000 and your Music folder by itself, and bundles its two small libraries.
 
-## Roadmap / ideas
-
-- Exact now-playing, position, volume and cover through the [beefweb](https://github.com/hyperblast/beefweb) component (no window-title guessing, works for songs outside the library).
-- `bar vol 40`, `bar seek 1:30`, `bar mute` through beefweb.
-- Show the elapsed time in the Now playing subtitle.
-- Lyrics, rating and "love / skip" buttons in the Now playing menu.
-- "Play this album from track N".
-- Recently played and most played lists.
-- Copy "Artist - Title" to the clipboard, or open the song's folder.
-- Fuzzy search on the artist and album in one query (`bar daft discovery`).
-- Settings window instead of `config.json`.
-- Linux / macOS support through MPRIS.
-
 ## Requirements
 
 - Windows
