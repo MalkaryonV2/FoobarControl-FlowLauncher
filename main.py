@@ -37,7 +37,6 @@ CONFIG_PATH = HERE / "config.json"
 CACHE_PATH = HERE / "index_cache.json"
 TEMP_DIR = Path(tempfile.gettempdir()) / "FoobarControlCovers"
 LOCK_PATH = HERE / "index.lock"
-NOW_CACHE_PATH = HERE / "now_playing_cache.json"
 QUEUE_PATH = HERE / "queue_state.json"   # what the plugin queued in foobar (for "Next:")
 PLAYLIST_WORDS = ("playlist", "playlists")
 DEBUG_PATH = HERE / "playlist_debug.txt"
@@ -87,7 +86,7 @@ DEFAULT_CONFIG = {
     "startup_delay": 3,       # seconds to let foobar2000 finish starting before sending it commands
     "startup_timeout": 30,    # longest wait for foobar2000's window after starting it
     "command_timeout": 8,     # longest wait for one foobar command to be accepted
-    "index_threads": 8,       # files whose tags are read at the same time during a scan
+    "index_threads": 2,       # files whose tags are read at the same time during a scan
     "playlist_queue_limit": 500,  # most songs queued when you play a foobar playlist
     "queue_settle_delay": 0.4,    # seconds to let foobar register the queue before "Play now" skips to it
     "play_now_retries": 2,        # extra "next" presses if foobar (e.g. Smart Shuffle) played another song first
@@ -368,8 +367,9 @@ def build_mix(kind, seed, tracks, cfg):
 
 
 def foobar_windows():
-    """(title, visible) for every top-level window of foobar2000.exe: [] when foobar isn't
-    running, None when this can't be checked (not Windows)."""
+    """(title, visible, owned) for every top-level window of foobar2000.exe: [] when foobar
+    isn't running, None when this can't be checked (not Windows). Dialogs (Preferences...) are
+    'owned' by the main window; the main window itself is not."""
     if os.name != "nt":
         return None
     try:
@@ -377,6 +377,8 @@ def foobar_windows():
         from ctypes import wintypes
         user32, kernel32 = ctypes.windll.user32, ctypes.windll.kernel32
         user32.IsWindowVisible.argtypes = [wintypes.HWND]
+        user32.GetWindow.argtypes = [wintypes.HWND, wintypes.UINT]
+        user32.GetWindow.restype = wintypes.HWND
         user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
         user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
         user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
@@ -409,7 +411,7 @@ def foobar_windows():
                         b = ctypes.create_unicode_buffer(n + 1)
                         user32.GetWindowTextW(hwnd, b, n + 1)
                         title = b.value
-                    wins.append((title, bool(user32.IsWindowVisible(hwnd))))
+                    wins.append((title, bool(user32.IsWindowVisible(hwnd)), bool(user32.GetWindow(hwnd, 4))))  # 4 = GW_OWNER
             except Exception:
                 pass
             return True
@@ -421,9 +423,15 @@ def foobar_windows():
         return None
 
 
+JUNK_TITLES = ("default ime", "msctfime", "gdi+", "cicero", "broadcastlistener", "dde server", "hidden")
+
+
 def now_playing_titles():
-    """Titles of foobar2000's visible windows (its main window shows the playing song)."""
-    return [t for t, visible in (foobar_windows() or []) if visible and t]
+    """Titles of foobar2000's main-level windows, visible ones first (a foobar hidden in the
+    tray keeps updating its title too). Dialogs and Windows helper windows are left out."""
+    wins = [(t, v) for t, v, owned in (foobar_windows() or [])
+            if t and not owned and not t.lower().startswith(JUNK_TITLES)]
+    return [t for t, v in sorted(wins, key=lambda x: not x[1])]
 
 
 def foobar_running():
@@ -437,7 +445,7 @@ def match_now_playing(titles, tracks):
     best, best_score = None, 0
     for title in titles:
         nt = " %s " % norm(re.sub(r"\[foobar2000[^\]]*\]", " ", title, flags=re.I))
-        if len(nt) < 5:
+        if len(nt) < 4:
             continue
         for t in tracks:
             nti = t.get("ntitle") or norm(t.get("title", ""))
@@ -455,35 +463,18 @@ def match_now_playing(titles, tracks):
 
 
 def playing_window_title():
-    """(raw window title, cleaned 'Artist - Title') of the song foobar2000 is showing, or
-    (None, None) when nothing is playing. A stopped foobar only shows 'foobar2000 v2.x', and
-    other foobar windows (Preferences...) are ignored because they carry no '[foobar2000]' tag."""
-    for title, visible in (foobar_windows() or []):
-        if not (visible and title) or "[foobar2000" not in title.lower():
-            continue
-        clean = re.sub(r"\s*\[foobar2000[^\]]*\]", "", title, flags=re.I).strip()
-        if clean and not norm(clean).startswith("foobar2000"):
-            return title, clean
+    """(raw window title, cleaned 'Artist - Title') of the song foobar2000 shows, or (None, None)
+    when nothing is playing (a stopped foobar only shows 'foobar2000 v2.x'). Titles carrying
+    foobar's '[foobar2000]' tag are preferred; a custom title format without it works too."""
+    titles = now_playing_titles()
+    for tagged in (True, False):
+        for title in titles:
+            if ("[foobar2000" in title.lower()) != tagged:
+                continue
+            clean = re.sub(r"\s*\[foobar2000[^\]]*\]", "", title, flags=re.I).strip()
+            if clean and not norm(clean).startswith("foobar2000"):
+                return title, clean
     return None, None
-
-
-def load_now_cache(key):
-    """The track found for this exact window title last time (saves loading the whole index)."""
-    try:
-        c = json.loads(NOW_CACHE_PATH.read_text(encoding="utf-8"))
-        if c.get("key") == key and c.get("track") and os.path.isfile(c["track"].get("path", "")):
-            return c["track"]
-    except Exception:
-        pass
-    return None
-
-
-def save_now_cache(key, track):
-    try:
-        clean = {k: v for k, v in track.items() if not k.startswith("_")}  # '_f' holds a set
-        NOW_CACHE_PATH.write_text(json.dumps({"key": key, "track": clean}), encoding="utf-8")
-    except Exception:
-        pass
 
 
 # ---- what the plugin has queued in foobar ("Next:" in the Now playing result) -------------------
@@ -664,6 +655,8 @@ def write_playlist_debug(cfg):
             L.append("profile folder: %s -> %s" % (prof, sorted(os.listdir(prof))[:40]))
         except OSError as e:
             L.append("profile folder: %s -> %s" % (prof, e))
+    L += ["", "foobar windows (title, visible, owned): %r" % ((foobar_windows(),)),
+          "title used for Now playing: %r" % ((playing_window_title(),)), ""]
     pdir = playlists_dir(cfg)
     L += ["", "playlists folder used: %r" % pdir]
     if pdir:
@@ -783,7 +776,7 @@ def start_background_build():
         return
     try:
         LOCK_PATH.write_text(str(os.getpid()))
-        flags = (0x00000008 | 0x08000000) if os.name == "nt" else 0  # DETACHED_PROCESS | CREATE_NO_WINDOW
+        flags = (0x00000008 | 0x08000000 | 0x00004000) if os.name == "nt" else 0  # DETACHED_PROCESS | CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY
         subprocess.Popen(
             [sys.executable, str(HERE / "main.py"), json.dumps({"method": "build_now", "parameters": []})],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -796,9 +789,10 @@ def start_background_build():
             pass
 
 
-def get_index(cfg):
+def get_index(cfg, refresh=True):
     """Returns the saved index at once (even an old one) and refreshes it in the
-    background when it is missing, stale, or made for another music folder."""
+    background when it is missing, stale, or made for another music folder.
+    refresh=False is used while starting playback: no scan may compete with the song."""
     data = None
     if CACHE_PATH.exists():
         try:
@@ -807,8 +801,8 @@ def get_index(cfg):
             data = None
     if data is not None and data.get("music_dir") != cfg["music_dir"]:
         data = None
-    if (data is None or (time.time() - data.get("built", 0)) > cfg["cache_hours"] * 3600
-            or data.get("version") != INDEX_VERSION):
+    if refresh and (data is None or (time.time() - data.get("built", 0)) > cfg["cache_hours"] * 3600
+                    or data.get("version") != INDEX_VERSION):
         start_background_build()
     if data is None:
         return {"tracks": [], "building": lock_active()}
@@ -1152,6 +1146,10 @@ class FoobarBar(FlowLauncher):
                               "open_config", [])]
         if q.startswith(">>"):
             return self.mode_step(q[2:])
+        parts = q.lower().split()
+        if len(parts) == 2 and parts[0] in NOW_NAMES and parts[1] == "debug":
+            return [self.item("Diagnostic", "Press Enter to open a file listing what foobar2000's windows look like.",
+                              "open_debug", [], icon=icon_path(ICON_SONG))]
         if q == "" or (" " not in q and norm(q) in NOW_NAMES):
             clear_temp()
             now = self.now_playing_items()
@@ -1222,15 +1220,8 @@ class FoobarBar(FlowLauncher):
         ] + (self.mix_buttons(eid) if kind == "song" else [])
 
     def current_track(self, key):
-        """The library track matching foobar's window title (cached by title, so the library
-        index is only loaded when the song changes)."""
-        t = load_now_cache(key)
-        if t is not None:
-            return t
-        t = match_now_playing([key], get_index(self.cfg)["tracks"])
-        if t is not None:
-            save_now_cache(key, t)
-        return t
+        """The library track matching foobar's window title."""
+        return match_now_playing([key], get_index(self.cfg)["tracks"])
 
     def now_playing_items(self):
         """The 'Now playing' result shown first for `bar`: song, artist, album and its cover.
@@ -1244,7 +1235,7 @@ class FoobarBar(FlowLauncher):
                               "noop", [], icon=icon_path(ICON_SONG), score=300000)]
         raw, clean = playing_window_title()
         if raw is None:
-            return [self.item("Nothing playing", "Press Enter to start playback.",
+            return [self.item("Nothing playing", "Press Enter to start playback. Playing but not shown? Type 'bar now debug'.",
                               "control", ["/playpause"], icon=icon_path(ICON_PLAYPAUSE), score=300000)]
         t = self.current_track(raw)
         if t is None:  # playing something that isn't in the indexed library
@@ -1318,7 +1309,7 @@ class FoobarBar(FlowLauncher):
             entries = self.playlist_entries(eid, shuffle=(mode == "shuffle"))
         else:
             entries = [(t["path"], track_label(t), t.get("ntitle") or norm(t.get("title", "")))
-                       for t in resolve(get_index(self.cfg)["tracks"], kind, eid)]
+                       for t in resolve(get_index(self.cfg, False)["tracks"], kind, eid)]
         if not entries:
             return
         self.ensure_foobar()
@@ -1364,7 +1355,7 @@ class FoobarBar(FlowLauncher):
         files = [f for f in playlist_files(pl["path"], self.cfg) if os.path.isfile(f)]
         if shuffle:
             random.shuffle(files)
-        by_path = {os.path.normcase(t["path"]): t for t in get_index(self.cfg)["tracks"]}
+        by_path = {os.path.normcase(t["path"]): t for t in get_index(self.cfg, False)["tracks"]}
         out = []
         for f in files[: int(self.cfg.get("playlist_queue_limit", 500))]:
             t = by_path.get(os.path.normcase(f))
@@ -1469,7 +1460,7 @@ class FoobarBar(FlowLauncher):
     def mix(self, kind, sid, mode):
         """kind: radio | similar. mode: 'current' = the song is already playing, only queue
         the mix; 'now' = play this song first, then the mix."""
-        data = get_index(self.cfg)
+        data = get_index(self.cfg, False)
         seed = next((t for t in data["tracks"] if t["id"] == sid), None)
         if seed is None:
             return
@@ -1496,6 +1487,12 @@ class FoobarBar(FlowLauncher):
         start_background_build()
 
     def build_now(self):  # runs in the detached background process
+        if os.name == "nt":  # lowest CPU, disk and memory priority: music playing must never stutter
+            try:
+                import ctypes
+                ctypes.windll.kernel32.SetPriorityClass(ctypes.windll.kernel32.GetCurrentProcess(), 0x00100000)
+            except Exception:
+                pass
         try:
             build_index(self.cfg)
         except Exception:

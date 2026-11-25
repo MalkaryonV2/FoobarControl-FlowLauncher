@@ -65,7 +65,7 @@ There is nothing to configure. The plugin finds foobar2000 and your Windows Musi
 | `bar similar` | Songs similar to the song playing right now |
 | `bar rescan` | Rescan your music folder (after adding music) |
 
-On the **Now playing** result, **Enter** pauses / resumes. The song and its cover are found by matching foobar's window title with your indexed library, so the song must be inside `music_dir` and foobar's title must contain its title (the default does). A song outside the library is still shown, with a default icon.
+On the **Now playing** result, **Enter** pauses / resumes. The song and its cover are found by matching foobar's window title with your indexed library, so the song must be inside `music_dir` and foobar's title must contain its title (the default does). It works with custom title formats and with foobar hidden in the tray. A song outside the library is still shown, with a default icon. If your song isn't found, type `bar now debug` to open a diagnostic file.
 
 Press **Enter** on a result, then choose **Play now** or **Play next (after the current track)**. For a **song** there are two more buttons: **Radio** and **Similar**, which play that song now and then queue songs like it. Shift+Enter (or the right arrow) on a result shows the same choices directly.
 
@@ -133,7 +133,7 @@ Optional. Open `config.json` in the plugin folder (it is created on first run).
 | `data_uri_max_kb` | With `data_uri`, covers bigger than this are skipped (400). |
 | `queue_command` | The foobar context-menu command used to queue tracks (`Add to playback queue`). |
 | `cache_hours` | How often the library is rescanned automatically (24). Rescans only read new or changed files. |
-| `index_threads` | Files read at the same time during a scan (8). |
+| `index_threads` | Files read at the same time during a scan (2). The scan runs at the lowest CPU and disk priority so it never disturbs playback. |
 | `playlist_queue_limit` | Most songs queued when playing a foobar playlist (500). |
 | `queue_settle_delay` | Seconds to let foobar2000 register the queue before "Play now" skips to it (0.4). |
 | `play_now_retries` | Extra "Next" presses if another song started first, for example with Smart Shuffle (2). |
@@ -151,6 +151,7 @@ Every icon is a PNG in the `icons` folder. Replace a file with your own, keeping
 - **"No music found":** set `music_dir` in `config.json`.
 - **Songs don't play or aren't queued:** check that `queue_command` matches the "Add to playback queue" entry in foobar's right-click menu.
 - **Radio / Similar says it can't tell which song is playing:** foobar's window title doesn't contain the song. Search the song and use its Radio / Similar buttons.
+- **Short stutter at the start of a song:** the plugin only sends commands to foobar2000 and never touches the audio. It never starts a library scan while launching a song, and scans run at the lowest priority. If it still happens, play the same song by double-clicking it in foobar: if it stutters too, the cause is foobar's output settings (try a larger buffer in Preferences > Playback > Output), the audio device, or a music folder stored on OneDrive without "Always keep on this device".
 - **Added new music:** type `bar rescan` (only the new files are read). For a complete rebuild, delete `index_cache.json` in the plugin folder.
 - **"Play now" starts another song (Smart Shuffle):** foobar2000 needs a moment to register the queue, so the plugin waits briefly, checks what is playing and presses Next again if needed. Raise `queue_settle_delay` (for example 0.8) if it still happens. This check needs foobar's window title to contain the song title.
 - **`bar playlist` shows nothing or odd names:** the playlists are read from foobar's profile folder. Type `bar playlist debug` to open a diagnostic file, then [open an issue](../../issues/new/choose) and attach it.
@@ -167,7 +168,7 @@ Everything runs locally. The plugin reads your music folder to build its index (
 python scripts/build_zip.py
 ```
 
-This writes `dist/FoobarControl-<version>.zip`, with `plugin.json` at its root, ready to install. Pushing a tag such as `v2.1` (matching the `Version` in `plugin.json`) makes GitHub Actions build the zip and attach it to a release automatically.
+This writes `dist/FoobarControl-<version>.zip`, with `plugin.json` at its root, ready to install. Pushing a tag such as `v2.1.1` (matching the `Version` in `plugin.json`) makes GitHub Actions build the zip and attach it to a release automatically.
 
 To work on the plugin, clone the repo into `%APPDATA%\FlowLauncher\Plugins\FoobarControl` and restart Flow Launcher after each change.
 

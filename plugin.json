@@ -6,7 +6,7 @@
   "Description": "Control foobar2000 and play songs, albums and artists from your music library, with Radio and Similar",
   "Author": "Malka'",
   "Website": "https://github.com/MalkaryonV2/FoobarControl-FlowLauncher",
-  "Version": "2.1",
+  "Version": "2.1.1",
   "Language": "python",
   "IcoPath": "icon.png",
   "ExecuteFileName": "main.py"

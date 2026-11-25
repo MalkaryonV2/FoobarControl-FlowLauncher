@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.1.1
+- **Now playing detection fixed:** it no longer needs "[foobar2000]" in foobar's window title, so custom title formats work, as does foobar hidden in the tray. Dialogs and Windows helper windows are ignored. `bar now debug` writes a diagnostic file.
+- **Less disturbance during playback:** starting a song never triggers a library scan, and scans run at the lowest CPU / disk priority with 2 threads (was 8).
+- Removed the now-playing cache file (the index is read directly).
+
 ## 2.1
 - **Next in the queue:** the Now playing result shows `Next: ...` for the songs you queued through the plugin. No extra program needed.
 - **Playlists:** `bar playlist` lists your foobar2000 playlists; play one now, shuffled, or next. Matching playlists also appear in normal searches.
